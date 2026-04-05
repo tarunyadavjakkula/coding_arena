@@ -1,5 +1,3 @@
-'use client'
-
 import { useRef, useEffect, useCallback, memo } from 'react'
 import type { OnMount } from '@monaco-editor/react'
 import type { editor } from 'monaco-editor'

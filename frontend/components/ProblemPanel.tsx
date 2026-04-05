@@ -1,5 +1,3 @@
-'use client'
-
 import { useMemo, memo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import DOMPurify from 'isomorphic-dompurify'
