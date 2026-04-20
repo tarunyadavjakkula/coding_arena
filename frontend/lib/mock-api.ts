@@ -30,24 +30,32 @@ if (typeof window !== 'undefined' && USE_MOCK) {
       try {
         await new Promise(resolve => setTimeout(resolve, 800))
 
-        const testResults = [
-          { status: 'AC', message: 'Accepted' },
-          { status: 'AC', message: 'Accepted' },
-          { status: 'WA', message: 'Wrong Answer' },
-          { status: 'AC', message: 'Accepted' },
-          { status: 'TLE', message: 'Time Limit Exceeded' },
+        const cases = [
+          { position: 1, status: 'AC', time: 0.012, memory_kb: 3200, points: 5.0, total_points: 5.0 },
+          { position: 2, status: 'AC', time: 0.015, memory_kb: 3200, points: 5.0, total_points: 5.0 },
+          { position: 3, status: 'WA', time: 0.011, memory_kb: 3100, points: 0.0, total_points: 5.0 },
+          { position: 4, status: 'AC', time: 0.013, memory_kb: 3200, points: 5.0, total_points: 5.0 },
+          { position: 5, status: 'TLE', time: 2.001, memory_kb: 4500, points: 0.0, total_points: 5.0 },
         ]
 
-        const passedCount = testResults.filter(t => t.status === 'AC').length
-        const totalCount = testResults.length
-        const allPassed = passedCount === totalCount
+        const points = cases.reduce((s, c) => s + c.points, 0)
+        const totalPoints = cases.reduce((s, c) => s + c.total_points, 0)
+        const allAC = cases.every(c => c.status === 'AC')
 
         const responseData = {
-          submission_id: Date.now(),
-          status: allPassed ? 'AC' : 'WA',
-          message: allPassed ? 'All test cases passed' : `${passedCount}/${totalCount} test cases passed`,
-          test_results: testResults,
-          timestamp: Date.now()
+          id: 'sub_' + Math.random().toString(16).slice(2, 34).padEnd(32, '0'),
+          status: allAC ? 'graded' : 'graded',
+          problem_id: 'mock-problem',
+          language: 'python',
+          message: allAC ? 'AC' : 'WA',
+          result: {
+            verdict: allAC ? 'AC' : 'WA',
+            cases: cases,
+            total_time: cases.reduce((s, c) => s + c.time, 0),
+            max_memory_kb: Math.max(...cases.map(c => c.memory_kb)),
+            points: points,
+            total_points: totalPoints,
+          }
         }
 
         return new Response(JSON.stringify(responseData), {
@@ -80,6 +88,9 @@ if (typeof window !== 'undefined' && USE_MOCK) {
           testCases = [
             {
               name: 'Custom Input',
+              status: 'AC',
+              time: 0.010,
+              memory_kb: 3200,
               input: requestBody.custom_input,
               expected_output: 'N/A',
               actual_output: 'Your output here (simulated)'
@@ -88,26 +99,32 @@ if (typeof window !== 'undefined' && USE_MOCK) {
         } else {
           testCases = [
             {
-              name: 'Sample Test Case 1',
-              input: '5\na b c d e',
-              expected_output: 'e d c b a',
-              actual_output: 'e d c b a'
+              name: 'Test Case 1',
+              status: 'AC',
+              time: 0.012,
+              memory_kb: 3200,
+              input: '',
+              expected_output: '',
+              actual_output: ''
             },
             {
-              name: 'Sample Test Case 2',
-              input: '3\nhello world test',
-              expected_output: 'test world hello',
-              actual_output: 'test world hello'
+              name: 'Test Case 2',
+              status: 'AC',
+              time: 0.015,
+              memory_kb: 3100,
+              input: '',
+              expected_output: '',
+              actual_output: ''
             }
           ]
         }
 
         const responseData = {
-          run_id: Date.now(),
-          status: 'Success',
-          message: isCustomInput ? 'Custom input executed' : 'Sample test cases passed',
+          run_id: 'run_' + Math.random().toString(16).slice(2, 34).padEnd(32, '0'),
+          status: 'AC',
+          message: isCustomInput ? 'Custom input executed' : 'AC',
           test_cases: testCases,
-          timestamp: Date.now()
+          timestamp: 0
         }
 
         return new Response(JSON.stringify(responseData), {

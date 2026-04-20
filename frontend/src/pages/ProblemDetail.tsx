@@ -12,17 +12,57 @@ import {
   type LanguageTemplate,
 } from '@/lib/data-service'
 
-// Type definitions for API responses
-interface TestCase {
-  name: string
-  input: string
-  expected_output: string
-  actual_output: string
+// Type definitions matching backend API response format (model/submission.go)
+interface JudgeCaseResult {
+  position: number
+  status: string
+  time: number
+  memory_kb: number
+  points: number
+  total_points: number
+  feedback?: string
 }
 
-interface TestResult {
+interface JudgeResult {
+  verdict: string
+  compile_error?: string
+  cases?: JudgeCaseResult[]
+  total_time: number
+  max_memory_kb: number
+  points: number
+  total_points: number
+}
+
+interface SubmitResponse {
+  id: string
   status: string
-  message: string
+  problem_id: string
+  language: string
+  message?: string
+  result?: JudgeResult
+}
+
+interface RunTestCase {
+  name: string
+  status?: string
+  time?: number
+  memory_kb?: number
+  input?: string
+  expected_output?: string
+  actual_output?: string
+}
+
+const verdictLabel: Record<string, string> = {
+  AC: 'Accepted',
+  WA: 'Wrong Answer',
+  TLE: 'Time Limit Exceeded',
+  MLE: 'Memory Limit Exceeded',
+  RTE: 'Runtime Error',
+  CE: 'Compile Error',
+  IR: 'Invalid Return',
+  OLE: 'Output Limit Exceeded',
+  IE: 'Internal Error',
+  SC: 'Short Circuited',
 }
 
 export default function ProblemDetail() {
@@ -150,33 +190,56 @@ export default function ProblemDetail() {
 
       const result = await response.json()
 
-      setExecutionStatus(result.message)
-
       const messages: ConsoleMessage[] = []
 
+      if (result.status && result.status !== 'Success' && result.status !== 'unavailable') {
+        // Judge returned a verdict — display summary
+        const verdict = result.status
+        const label = verdictLabel[verdict] || verdict
+        setExecutionStatus(label)
+      } else {
+        setExecutionStatus(result.message || 'Run complete')
+      }
+
       if (result.test_cases) {
-        result.test_cases.forEach((testCase: TestCase) => {
-          messages.push({
-            type: 'info',
-            message: `<div class="space-y-2">
-              <div class="font-semibold">${testCase.name}</div>
-              <div class="grid grid-cols-1 gap-2 text-sm">
-                <div>
-                  <div class="font-medium text-gray-700">Input:</div>
-                  <pre class="bg-white border border-gray-200 rounded p-2 mt-1 text-xs">${testCase.input}</pre>
+        result.test_cases.forEach((testCase: RunTestCase) => {
+          const caseStatus = testCase.status || 'AC'
+          const caseLabel = verdictLabel[caseStatus] || caseStatus
+
+          if (testCase.input !== undefined && testCase.input !== '') {
+            // Mock / detailed format with input/output
+            messages.push({
+              type: 'info',
+              message: `<div class="space-y-2">
+                <div class="font-semibold">${testCase.name}</div>
+                <div class="grid grid-cols-1 gap-2 text-sm">
+                  <div>
+                    <div class="font-medium text-gray-700">Input:</div>
+                    <pre class="bg-white border border-gray-200 rounded p-2 mt-1 text-xs">${testCase.input}</pre>
+                  </div>
+                  <div>
+                    <div class="font-medium text-gray-700">Expected Output:</div>
+                    <pre class="bg-white border border-gray-200 rounded p-2 mt-1 text-xs">${testCase.expected_output}</pre>
+                  </div>
+                  <div>
+                    <div class="font-medium text-gray-700">Your Output:</div>
+                    <pre class="bg-white border border-gray-200 rounded p-2 mt-1 text-xs">${testCase.actual_output}</pre>
+                  </div>
                 </div>
-                <div>
-                  <div class="font-medium text-gray-700">Expected Output:</div>
-                  <pre class="bg-white border border-gray-200 rounded p-2 mt-1 text-xs">${testCase.expected_output}</pre>
-                </div>
-                <div>
-                  <div class="font-medium text-gray-700">Your Output:</div>
-                  <pre class="bg-white border border-gray-200 rounded p-2 mt-1 text-xs">${testCase.actual_output}</pre>
-                </div>
-              </div>
-            </div>`,
-            timestamp: Date.now(),
-          })
+              </div>`,
+              timestamp: Date.now(),
+            })
+          } else {
+            // Judge format — verdict + time/memory
+            const timeStr = testCase.time !== undefined ? `${testCase.time.toFixed(3)}s` : ''
+            const memStr = testCase.memory_kb !== undefined ? `${testCase.memory_kb} KB` : ''
+            const detail = [timeStr, memStr].filter(Boolean).join(', ')
+            messages.push({
+              type: caseStatus === 'AC' ? 'success' : 'error',
+              message: `${testCase.name}: ${caseStatus} — ${caseLabel}${detail ? ' (' + detail + ')' : ''}`,
+              timestamp: Date.now(),
+            })
+          }
         })
       }
 
@@ -230,9 +293,9 @@ export default function ProblemDetail() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          problem_id: problemId,
+          code: code,
           language: language,
-          source: code,
+          problem_id: problemId,
         }),
       })
 
@@ -240,20 +303,47 @@ export default function ProblemDetail() {
         throw new Error(`Submission failed: ${response.statusText}`)
       }
 
-      const result = await response.json()
+      const result: SubmitResponse = await response.json()
 
-      setSubmissionId(`Submission ${result.submission_id}`)
-      setExecutionStatus(result.message)
+      setSubmissionId(`Submission ${result.id}`)
 
       const messages: ConsoleMessage[] = []
 
-      if (result.test_results) {
-        result.test_results.forEach((test: TestResult, index: number) => {
+      if (result.result) {
+        const r = result.result
+        const verdict = r.verdict || result.status
+        const label = verdictLabel[verdict] || verdict
+
+        // Summary line
+        setExecutionStatus(`${label} — ${r.points}/${r.total_points} points, ${r.total_time.toFixed(3)}s, ${r.max_memory_kb} KB`)
+
+        // Compile error
+        if (r.compile_error) {
           messages.push({
-            type: test.status === 'AC' ? 'success' : 'error',
-            message: `Test Case ${index + 1}: ${test.status} - ${test.message}`,
+            type: 'error',
+            message: `<div class="font-semibold mb-1">Compile Error</div><pre class="bg-white border border-gray-200 rounded p-2 text-xs whitespace-pre-wrap">${r.compile_error}</pre>`,
             timestamp: Date.now(),
           })
+        }
+
+        // Per-case results
+        if (r.cases) {
+          r.cases.forEach((c: JudgeCaseResult) => {
+            const caseLabel = verdictLabel[c.status] || c.status
+            messages.push({
+              type: c.status === 'AC' ? 'success' : 'error',
+              message: `Test Case ${c.position}: ${c.status} — ${caseLabel} (${c.time.toFixed(3)}s, ${c.memory_kb} KB, ${c.points}/${c.total_points} pts)${c.feedback ? ' — ' + c.feedback : ''}`,
+              timestamp: Date.now(),
+            })
+          })
+        }
+      } else {
+        // Queued / no judge
+        setExecutionStatus(result.message || result.status)
+        messages.push({
+          type: 'info',
+          message: result.message || 'Submission queued — no judge connected',
+          timestamp: Date.now(),
         })
       }
 
