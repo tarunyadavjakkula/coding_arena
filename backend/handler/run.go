@@ -3,6 +3,7 @@ package handler
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"log"
 	"net/http"
 
@@ -81,13 +82,13 @@ func Run(c *gin.Context) {
 		testCases := make([]gin.H, 0, len(judgeResult.Cases))
 		for _, cr := range judgeResult.Cases {
 			testCases = append(testCases, gin.H{
-				"name":            "Test Case " + string(rune('0'+cr.Position)),
-				"input":           "",
-				"expected_output": "",
-				"actual_output":   cr.Feedback,
+				"name":            fmt.Sprintf("Test Case %d", cr.Position),
 				"status":          cr.Status,
 				"time":            cr.Time,
 				"memory_kb":       cr.Memory,
+				"input":           "",
+				"expected_output": "",
+				"actual_output":   cr.Feedback,
 			})
 		}
 
