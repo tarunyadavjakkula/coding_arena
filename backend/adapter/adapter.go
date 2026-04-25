@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/Aerosane/coding_arena/backend/bridge"
+	"github.com/GCET-Open-Source-Foundation/coding_arena/backend/bridge"
 )
 
 // LanguageMap maps frontend language names to DMOJ executor IDs.
