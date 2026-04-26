@@ -1,10 +1,13 @@
 package adapter
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/Aerosane/coding_arena/backend/bridge"
+	"github.com/Aerosane/coding_arena/backend/config"
 )
 
 // LanguageMap maps frontend language names to DMOJ executor IDs.
@@ -39,11 +42,12 @@ const DefaultMemoryLimit = 262144
 // JudgeAdapter translates between the backend API and the DMOJ bridge.
 type JudgeAdapter struct {
 	bridge *bridge.Bridge
+	cfg    *config.JudgeConfig
 }
 
 // New creates a new JudgeAdapter backed by the given bridge.
-func New(b *bridge.Bridge) *JudgeAdapter {
-	return &JudgeAdapter{bridge: b}
+func New(b *bridge.Bridge, cfg *config.JudgeConfig) *JudgeAdapter {
+	return &JudgeAdapter{bridge: b, cfg: cfg}
 }
 
 // Available returns true if at least one judge is connected.
@@ -101,13 +105,47 @@ func (a *JudgeAdapter) Submit(req SubmissionRequest) (*SubmissionResult, error) 
 		memoryLimit = DefaultMemoryLimit
 	}
 
+	if a.cfg != nil {
+		if a.cfg.TimeLimit > 0 {
+			timeLimit = a.cfg.TimeLimit.Seconds()
+		}
+		if a.cfg.MemoryLimit > 0 {
+			memoryLimit = int64(a.cfg.MemoryLimit * 1024)
+		}
+	}
+
 	log.Printf("[ADAPTER] Submitting problem=%s lang=%s->%s time=%.1fs mem=%dKB",
 		req.ProblemID, req.Language, executorID, timeLimit, memoryLimit)
 
-	// Send to bridge (blocks until grading completes)
-	raw, err := a.bridge.Submit(req.ProblemID, executorID, req.Source, timeLimit, memoryLimit, req.ShortCircuit)
-	if err != nil {
-		return nil, fmt.Errorf("judge submission failed: %w", err)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeLimit*float64(time.Second)))
+	defer cancel()
+
+	type bridgeResult struct {
+		raw *bridge.SubmissionResult
+		err error
+	}
+	resChan := make(chan bridgeResult, 1)
+
+	go func() {
+		raw, err := a.bridge.Submit(req.ProblemID, executorID, req.Source, timeLimit, memoryLimit, req.ShortCircuit)
+		resChan <- bridgeResult{raw, err}
+	}()
+
+	var raw *bridge.SubmissionResult
+	select {
+	case <-ctx.Done():
+		if ctx.Err() == context.DeadlineExceeded {
+			return &SubmissionResult{
+				Status:       "TLE",
+				CompileError: "Time Limit Exceeded (Adapter Timeout)",
+			}, nil
+		}
+		return nil, ctx.Err()
+	case r := <-resChan:
+		if r.err != nil {
+			return nil, fmt.Errorf("judge submission failed: %w", r.err)
+		}
+		raw = r.raw
 	}
 
 	// Convert bridge result to API result

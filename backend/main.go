@@ -12,6 +12,7 @@ import (
 
 	"github.com/Aerosane/coding_arena/backend/adapter"
 	"github.com/Aerosane/coding_arena/backend/bridge"
+	"github.com/Aerosane/coding_arena/backend/config"
 	"github.com/Aerosane/coding_arena/backend/handler"
 	"github.com/Aerosane/coding_arena/backend/middleware"
 	"github.com/gin-gonic/gin"
@@ -57,7 +58,11 @@ func main() {
 	defer b.Stop()
 
 	// Create adapter and inject into handler
-	adapt := adapter.New(b)
+	cfg := &config.JudgeConfig{
+		TimeLimit:   2 * time.Second,
+		MemoryLimit: 256,
+	}
+	adapt := adapter.New(b, cfg)
 	handler.SetAdapter(adapt)
 
 	// --- Router setup (no default middleware — we add our own) ---
