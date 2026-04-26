@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"testing"
+	"time"
 
 	"github.com/GCET-Open-Source-Foundation/coding_arena/backend/bridge"
 )
@@ -73,5 +74,34 @@ func TestMapResult(t *testing.T) {
 	}
 	if mapped.Cases[1].Status != "WA" {
 		t.Errorf("expected case 2 status WA, got %s", mapped.Cases[1].Status)
+	}
+}
+
+type mockBridge struct {
+	delay time.Duration
+}
+
+func (m *mockBridge) Submit(problemID, language, source string, timeLimit float64, memoryLimit int64, shortCircuit bool) (*bridge.SubmissionResult, error) {
+	time.Sleep(m.delay)
+	return &bridge.SubmissionResult{Status: "AC"}, nil
+}
+
+func (m *mockBridge) HasJudge() bool { return true }
+
+func TestTimeout(t *testing.T) {
+	mb := &mockBridge{delay: 200 * time.Millisecond}
+	adapt := New(mb, nil)
+
+	req := SubmissionRequest{
+		Language:  "python",
+		TimeLimit: 0.05, // 50ms
+	}
+
+	res, err := adapt.Submit(req)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if res.Status != "TLE" {
+		t.Errorf("expected TLE status, got %s", res.Status)
 	}
 }

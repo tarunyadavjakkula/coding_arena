@@ -57,7 +57,7 @@ func main() {
 	defer b.Stop()
 
 	// Create adapter and inject into handler
-	adapt := adapter.New(b)
+	adapt := adapter.New(b, nil)
 	handler.SetAdapter(adapt)
 
 	// --- Router setup (no default middleware — we add our own) ---
