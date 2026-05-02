@@ -12,38 +12,35 @@ type JudgeConfig struct {
 	MemoryLimit int // in MB
 }
 
-// LoadJudgeConfig reads and parses judge configuration overrides from the
-// JUDGE_TIME_LIMIT and JUDGE_MEMORY_LIMIT environment variables.
-// It returns nil, nil if neither variable is set, leaves unspecified fields
-// at their zero value, and returns an error if a provided value is malformed.
+// LoadJudgeConfig reads and parses the judge configuration.
+// It uses default values if the env vars are empty, and returns an error
+// if the strings are malformed.
 func LoadJudgeConfig() (*JudgeConfig, error) {
-	timeStr := os.Getenv("JUDGE_TIME_LIMIT")
-	memStr := os.Getenv("JUDGE_MEMORY_LIMIT")
-
-	if timeStr == "" && memStr == "" {
-		return nil, nil
+	config := &JudgeConfig{
+		TimeLimit:   5 * time.Second, // Default time limit
+		MemoryLimit: 512,             // Default memory limit in MB
 	}
 
-	config := &JudgeConfig{}
-
+	timeStr := os.Getenv("JUDGE_TIME_LIMIT")
 	if timeStr != "" {
 		parsedTime, err := time.ParseDuration(timeStr)
 		if err != nil {
 			return nil, fmt.Errorf("invalid JUDGE_TIME_LIMIT: %w", err)
 		}
 		if parsedTime <= 0 {
-			return nil, fmt.Errorf("invalid JUDGE_TIME_LIMIT: must be greater than 0")
+			return nil, fmt.Errorf("invalid JUDGE_TIME_LIMIT: must be positive, got %v", parsedTime)
 		}
 		config.TimeLimit = parsedTime
 	}
 
+	memStr := os.Getenv("JUDGE_MEMORY_LIMIT")
 	if memStr != "" {
 		parsedMem, err := strconv.Atoi(memStr)
 		if err != nil {
 			return nil, fmt.Errorf("invalid JUDGE_MEMORY_LIMIT: %w", err)
 		}
 		if parsedMem <= 0 {
-			return nil, fmt.Errorf("invalid JUDGE_MEMORY_LIMIT: must be a positive integer")
+			return nil, fmt.Errorf("invalid JUDGE_MEMORY_LIMIT: must be positive, got %d", parsedMem)
 		}
 		config.MemoryLimit = parsedMem
 	}
