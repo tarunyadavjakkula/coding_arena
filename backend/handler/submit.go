@@ -11,10 +11,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Submit handles POST /submit — accepts code, language, and problem ID.
+// Submit handles POST /submit.
 func Submit(c *gin.Context) {
 	var req model.SubmitRequest
-
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "missing or invalid fields: code, language, and problem_id are required",
@@ -22,77 +21,85 @@ func Submit(c *gin.Context) {
 		return
 	}
 
-	if abortWithValidationError(c, validateInput(req.Code, req.Language, req.ProblemID)) {
+	if err := validateInput(req.Code, req.Language, req.ProblemID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	b := make([]byte, submissionIDBytes)
-	if _, err := rand.Read(b); err != nil {
-		log.Printf("[ERROR] failed to generate submission ID: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+	id := generateID("sub_")
+
+	log.Printf("[INFO] submission received: id=%s lang=%s problem=%s ip=%s",
+		id, req.Language, req.ProblemID, c.ClientIP())
+
+	if judgeAdapter == nil || !judgeAdapter.Available() {
+		c.JSON(http.StatusAccepted, model.SubmitResponse{
+			ID:        id,
+			ProblemID: req.ProblemID,
+			Language:  req.Language,
+			Status:    "queued",
+			Message:   "submission received, pending judge execution",
+		})
 		return
 	}
-	submissionID := "sub_" + hex.EncodeToString(b)
 
-	log.Printf("[INFO] submission received: id=%s language=%s problem=%s ip=%s",
-		submissionID, req.Language, req.ProblemID, c.ClientIP())
+	result, err := judgeAdapter.Submit(adapter.SubmissionRequest{
+		ProblemID:    req.ProblemID,
+		Language:     req.Language,
+		Source:       req.Code,
+		ShortCircuit: false,
+	})
+	if err != nil {
+		log.Printf("[ERROR] judge failed for %s: %v", id, err)
+		c.JSON(http.StatusAccepted, model.SubmitResponse{
+			ID:        id,
+			ProblemID: req.ProblemID,
+			Language:  req.Language,
+			Status:    "judge_error",
+			Message:   "judge grading failed, submission queued for retry",
+		})
+		return
+	}
 
-	/*
-		If the judge adapter is available with a connected judge, grade the submission.
-		Otherwise, queue it (graceful degradation).
-	*/
 	resp := model.SubmitResponse{
-		ID:        submissionID,
+		ID:        id,
 		ProblemID: req.ProblemID,
 		Language:  req.Language,
+		Status:    "graded",
+		Message:   result.Status,
+		Result:    mapJudgeResult(result),
 	}
 
-	if judgeAdapter != nil && judgeAdapter.Available() {
-		judgeResult, err := judgeAdapter.Submit(adapter.SubmissionRequest{
-			ProblemID:    req.ProblemID,
-			Language:     req.Language,
-			Source:       req.Code,
-			ShortCircuit: false,
+	log.Printf("[INFO] graded: id=%s verdict=%s points=%.1f/%.1f",
+		id, result.Status, result.Points, result.TotalPoints)
+
+	c.JSON(http.StatusOK, resp)
+}
+
+func generateID(prefix string) string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return prefix + hex.EncodeToString(b)
+}
+
+func mapJudgeResult(r *adapter.SubmissionResult) *model.JudgeResult {
+	jr := &model.JudgeResult{
+		Verdict:      r.Status,
+		CompileError: r.CompileError,
+		TotalTime:    r.TotalTime,
+		MaxMemory:    r.MaxMemory,
+		Points:       r.Points,
+		TotalPoints:  r.TotalPoints,
+	}
+	for _, c := range r.Cases {
+		jr.Cases = append(jr.Cases, model.JudgeCaseResult{
+			Position: c.Position,
+			Status:   c.Status,
+			Time:     c.Time,
+			Memory:   c.Memory,
+			Points:   c.Points,
+			Total:    c.Total,
+			Feedback: c.Feedback,
 		})
-
-		if err != nil {
-			log.Printf("[ERROR] judge submission failed for %s: %v", submissionID, err)
-			resp.Status = "judge_error"
-			resp.Message = "judge grading failed, submission queued for retry"
-			c.JSON(http.StatusAccepted, resp)
-			return
-		}
-
-		resp.Status = "graded"
-		resp.Message = judgeResult.Status
-		resp.Result = &model.JudgeResult{
-			Verdict:      judgeResult.Status,
-			CompileError: judgeResult.CompileError,
-			TotalTime:    judgeResult.TotalTime,
-			MaxMemory:    judgeResult.MaxMemory,
-			Points:       judgeResult.Points,
-			TotalPoints:  judgeResult.TotalPoints,
-		}
-		for _, cr := range judgeResult.Cases {
-			resp.Result.Cases = append(resp.Result.Cases, model.JudgeCaseResult{
-				Position: cr.Position,
-				Status:   cr.Status,
-				Time:     cr.Time,
-				Memory:   cr.Memory,
-				Points:   cr.Points,
-				Total:    cr.Total,
-				Feedback: cr.Feedback,
-			})
-		}
-
-		log.Printf("[INFO] submission graded: id=%s verdict=%s points=%.1f/%.1f",
-			submissionID, judgeResult.Status, judgeResult.Points, judgeResult.TotalPoints)
-
-		c.JSON(http.StatusOK, resp)
-		return
 	}
-
-	resp.Status = "queued"
-	resp.Message = "submission received, pending judge execution"
-	c.JSON(http.StatusAccepted, resp)
+	return jr
 }

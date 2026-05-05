@@ -18,34 +18,20 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const (
-	// maxBodyBytes is the maximum allowed request body size (1 MB).
-	maxBodyBytes = 1 << 20 // 1 MiB
-
-	// Server timeouts to prevent Slowloris and connection exhaustion.
-	readTimeout  = 10 * time.Second
-	writeTimeout = 30 * time.Second
-	idleTimeout  = 120 * time.Second
-
-	// Rate limit: 10 requests/second with burst of 20.
-	ratePerSecond = 10
-	rateBurst     = 20
-)
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
 
 func main() {
 	gin.SetMode(gin.ReleaseMode)
 
-	bridgeAddr := os.Getenv("BRIDGE_ADDR")
-	if bridgeAddr == "" {
-		bridgeAddr = ":9999"
-	}
-	judgeID := os.Getenv("JUDGE_ID")
-	if judgeID == "" {
-		judgeID = "coding-arena"
-	}
-	judgeKey := os.Getenv("JUDGE_KEY")
-	if judgeKey == "" {
-		judgeKey = "changeme"
+	bridgeAddr := envOr("BRIDGE_ADDR", ":9999")
+	judgeID := envOr("JUDGE_ID", "coding-arena")
+	judgeKey := envOr("JUDGE_KEY", "changeme")
+	if judgeKey == "changeme" {
 		log.Println("[WARN] Using default JUDGE_KEY — set JUDGE_KEY env var for production.")
 	}
 
@@ -65,14 +51,7 @@ func main() {
 
 	r := gin.New()
 
-	/*
-		Only trust loopback by default.
-		Set TRUSTED_PROXIES env var for your infra.
-	*/
-	trustedProxies := []string{"127.0.0.1", "::1"}
-	if envProxies := os.Getenv("TRUSTED_PROXIES"); envProxies != "" {
-		trustedProxies = strings.Split(envProxies, ",")
-	}
+	trustedProxies := strings.Split(envOr("TRUSTED_PROXIES", "127.0.0.1,::1"), ",")
 	if err := r.SetTrustedProxies(trustedProxies); err != nil {
 		log.Fatalf("failed to set trusted proxies: %v", err)
 	}
@@ -80,30 +59,21 @@ func main() {
 	r.Use(gin.Recovery())
 	r.Use(middleware.RequestLogger())
 	r.Use(middleware.SecurityHeaders())
-	r.Use(middleware.MaxBodySize(maxBodyBytes))
+	r.Use(middleware.MaxBodySize(1 << 20))
 
-	/*
-		CORS — set CORS_ORIGINS env var to a
-		comma-separated list of allowed origins.
-	*/
 	corsConfig := middleware.DefaultCORSConfig()
-	if envOrigins := os.Getenv("CORS_ORIGINS"); envOrigins != "" {
-		corsConfig.AllowOrigins = strings.Split(envOrigins, ",")
+	if origins := os.Getenv("CORS_ORIGINS"); origins != "" {
+		corsConfig.AllowOrigins = strings.Split(origins, ",")
 	}
 	r.Use(middleware.CORS(corsConfig))
 
-	limiter := middleware.NewRateLimiter(ratePerSecond, rateBurst)
+	limiter := middleware.NewRateLimiter(10, 20)
 	r.Use(limiter.Middleware())
 
-	/*
-		Load valid API keys from env (comma-separated).
-		In production, use a secrets manager.
-	*/
 	apiKeys := make(map[string]bool)
-	if envKeys := os.Getenv("API_KEYS"); envKeys != "" {
-		for _, k := range strings.Split(envKeys, ",") {
-			key := strings.TrimSpace(k)
-			if key != "" {
+	if raw := os.Getenv("API_KEYS"); raw != "" {
+		for _, k := range strings.Split(raw, ",") {
+			if key := strings.TrimSpace(k); key != "" {
 				apiKeys[key] = true
 			}
 		}
@@ -124,27 +94,22 @@ func main() {
 	if len(apiKeys) > 0 {
 		authed.Use(middleware.APIKeyAuth(apiKeys))
 	} else {
-		log.Println("[WARN] No API_KEYS configured — authentication is DISABLED. Set API_KEYS env var for production.")
+		log.Println("[WARN] No API_KEYS configured — authentication is DISABLED.")
 	}
 	authed.POST("/submit", handler.Submit)
 	authed.POST("/run", handler.Run)
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-
+	port := envOr("PORT", "8080")
 	srv := &http.Server{
 		Addr:         ":" + port,
 		Handler:      r,
-		ReadTimeout:  readTimeout,
-		WriteTimeout: writeTimeout,
-		IdleTimeout:  idleTimeout,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
 
 	go func() {
-		log.Printf("[INFO] Backend starting on :%s (release mode)", port)
-		log.Printf("[INFO] Bridge listening on %s for judge connections", bridgeAddr)
+		log.Printf("[INFO] Backend starting on :%s", port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("server error: %v", err)
 		}
@@ -153,11 +118,8 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-	log.Println("[INFO] Shutting down server...")
+	log.Println("[INFO] Shutting down...")
 
-	/*
-		Give in-flight requests up to 30 seconds to complete.
-	*/
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {

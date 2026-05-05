@@ -1,8 +1,6 @@
 package handler
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"log"
 	"net/http"
@@ -12,10 +10,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Run handles POST /run — runs code against sample test cases.
+// Run handles POST /run.
 func Run(c *gin.Context) {
 	var req model.RunRequest
-
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "missing or invalid fields: source, language, and problem_id are required",
@@ -23,62 +20,56 @@ func Run(c *gin.Context) {
 		return
 	}
 
-	if abortWithValidationError(c, validateInput(req.Source, req.Language, req.ProblemID)) {
+	if err := validateInput(req.Source, req.Language, req.ProblemID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	b := make([]byte, submissionIDBytes)
-	if _, err := rand.Read(b); err != nil {
-		log.Printf("[ERROR] failed to generate run ID: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
-		return
-	}
-	runID := "run_" + hex.EncodeToString(b)
+	runID := generateID("run_")
 
-	log.Printf("[INFO] run request: id=%s language=%s problem=%s ip=%s",
+	log.Printf("[INFO] run request: id=%s lang=%s problem=%s ip=%s",
 		runID, req.Language, req.ProblemID, c.ClientIP())
 
-	if judgeAdapter != nil && judgeAdapter.Available() {
-		judgeResult, err := judgeAdapter.Submit(adapter.SubmissionRequest{
-			ProblemID:    req.ProblemID,
-			Language:     req.Language,
-			Source:       req.Source,
-			ShortCircuit: false,
-		})
-
-		if err != nil {
-			log.Printf("[ERROR] run failed for %s: %v", runID, err)
-			c.JSON(http.StatusInternalServerError, model.RunResponse{
-				RunID:   runID,
-				Status:  "error",
-				Message: "judge execution failed",
-			})
-			return
-		}
-
-		testCases := make([]model.RunCaseResult, 0, len(judgeResult.Cases))
-		for _, cr := range judgeResult.Cases {
-			testCases = append(testCases, model.RunCaseResult{
-				Name:         fmt.Sprintf("Test Case %d", cr.Position),
-				Status:       cr.Status,
-				Time:         cr.Time,
-				MemoryKB:     cr.Memory,
-				ActualOutput: cr.Feedback,
-			})
-		}
-
-		c.JSON(http.StatusOK, model.RunResponse{
-			RunID:     runID,
-			Status:    judgeResult.Status,
-			Message:   judgeResult.Status,
-			TestCases: testCases,
+	if judgeAdapter == nil || !judgeAdapter.Available() {
+		c.JSON(http.StatusServiceUnavailable, model.RunResponse{
+			RunID:   runID,
+			Status:  "unavailable",
+			Message: "no judge connected",
 		})
 		return
 	}
 
-	c.JSON(http.StatusServiceUnavailable, model.RunResponse{
-		RunID:   runID,
-		Status:  "unavailable",
-		Message: "no judge connected — run unavailable",
+	result, err := judgeAdapter.Submit(adapter.SubmissionRequest{
+		ProblemID:    req.ProblemID,
+		Language:     req.Language,
+		Source:       req.Source,
+		ShortCircuit: false,
+	})
+	if err != nil {
+		log.Printf("[ERROR] run failed for %s: %v", runID, err)
+		c.JSON(http.StatusInternalServerError, model.RunResponse{
+			RunID:   runID,
+			Status:  "error",
+			Message: "judge execution failed",
+		})
+		return
+	}
+
+	testCases := make([]model.RunCaseResult, 0, len(result.Cases))
+	for _, cr := range result.Cases {
+		testCases = append(testCases, model.RunCaseResult{
+			Name:         fmt.Sprintf("Test Case %d", cr.Position),
+			Status:       cr.Status,
+			Time:         cr.Time,
+			MemoryKB:     cr.Memory,
+			ActualOutput: cr.Feedback,
+		})
+	}
+
+	c.JSON(http.StatusOK, model.RunResponse{
+		RunID:     runID,
+		Status:    result.Status,
+		Message:   result.Status,
+		TestCases: testCases,
 	})
 }
