@@ -1,5 +1,5 @@
 /**
- * Data Service for loading problems and starter code templates from the API
+ * Data Service for loading problems and starter code templates from JSON files
  * Implements in-memory caching to avoid redundant network requests
  */
 
@@ -68,7 +68,7 @@ interface StarterCodeData {
 }
 
 /**
- * Fetches and parses problems from the API with caching and retry logic
+ * Fetches and parses problems.json with caching and retry logic
  * @param retries - Number of retry attempts (default: 3)
  * @param retryDelay - Delay between retries in milliseconds (default: 1000)
  * @returns Promise resolving to array of problems
@@ -115,17 +115,22 @@ export async function getProblems(retries: number = 3, retryDelay: number = 1000
 }
 
 /**
- * Fetches a specific problem by ID from the problem list
+ * Fetches a specific problem by ID from problems.json
  * @param id - The unique problem identifier
  * @returns Promise resolving to the problem or null if not found
  * @throws Error if fetch fails or JSON is invalid
  */
 export async function getProblemById(id: string): Promise<Problem | null> {
   try {
-    const problems = await getProblems()
-    const problem = problems.find(p => p.id === id)
+    const response = await fetch(`/api/problems/${id}`)
     
-    return problem || null
+    if (!response.ok) {
+      if (response.status === 404) return null
+      throw new Error(`Failed to load problem ${id}: ${response.statusText}`)
+    }
+    
+    const problem: Problem = await response.json()
+    return problem
   } catch (error) {
     if (error instanceof Error) {
       throw new Error(`Failed to load problem ${id}: ${error.message}`)
@@ -204,7 +209,7 @@ function validateProblemId(problemId: string): string {
   if (!problemId || typeof problemId !== 'string') {
     throw new Error('Problem ID must be a non-empty string')
   }
-
+  
   const trimmed = problemId.trim()
 
   // Must match backend problemIDPattern: lowercase alphanumeric + hyphens, 1-64 chars,
@@ -212,7 +217,7 @@ function validateProblemId(problemId: string): string {
   if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(trimmed)) {
     throw new Error('Problem ID must be lowercase alphanumeric with hyphens, 1-64 characters')
   }
-
+  
   return trimmed
 }
 

@@ -1,3 +1,6 @@
+title: "Reverse String"
+difficulty: "Easy"
+category: "Strings"
 test_cases:
 - {in: 1.in, out: 1.out, points: 3}
 - {in: 2.in, out: 2.out, points: 3}

@@ -1,4 +1,22 @@
 services:
+  # --- Postgres ---
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: arena
+      POSTGRES_PASSWORD: arena
+      POSTGRES_DB: coding_arena
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U arena"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
   # --- Go backend + DMOJ bridge ---
   backend:
     build:
@@ -13,10 +31,14 @@ services:
       JUDGE_ID: "coding-arena"
       JUDGE_KEY: "changeme"
       CORS_ORIGINS: "http://localhost,http://localhost:80,http://localhost:5173"
+      DATABASE_URL: "postgres://arena:arena@postgres:5432/coding_arena?sslmode=disable"
       PROBLEMS_PATH: "/judge-config/problems"
       # API_KEYS: "your-key-here"  # Uncomment for production
     volumes:
       - ./judge-config/problems:/judge-config/problems:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
@@ -49,3 +71,6 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
+
+volumes:
+  pgdata:

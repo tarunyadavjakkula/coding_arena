@@ -100,11 +100,86 @@ func getProblemsPath() string {
 	return path
 }
 
+func parseProblem(problemID, initPath string) (Problem, error) {
+	prob := Problem{
+		ID:         problemID,
+		Title:      titleCase(problemID), // Fallback title
+		Difficulty: "Medium",            // Default difficulty
+	}
+
+	data, err := os.ReadFile(initPath)
+	if err != nil {
+		return prob, err
+	}
+
+	var config ProblemConfig
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return prob, err
+	}
+
+	overrideID := ""
+	if config.ID != "" {
+		overrideID = config.ID
+	} else if config.Slug != "" {
+		overrideID = config.Slug
+	}
+
+	if overrideID != "" {
+		if problemIDPattern.MatchString(overrideID) {
+			prob.ID = overrideID
+			prob.Title = titleCase(overrideID) // Update fallback to match new ID
+		} else {
+			log.Printf("[WARN] ignored invalid problem id override for problem %s: %q", problemID, overrideID)
+		}
+	}
+
+	if config.Title != "" {
+		prob.Title = config.Title
+	} else if config.Name != "" {
+		prob.Title = config.Name
+	}
+	if config.Difficulty != "" {
+		prob.Difficulty = normalizeDifficulty(config.Difficulty)
+	} else {
+		prob.Difficulty = "Medium" // Default if missing
+	}
+	if config.Category != "" {
+		prob.Category = config.Category
+	}
+	if config.Points > 0 {
+		prob.Points = config.Points
+	}
+	if config.SolvedCount > 0 {
+		prob.SolvedCount = config.SolvedCount
+	}
+	if config.Description != "" {
+		prob.Description = config.Description
+	}
+	if config.InputFormat != "" {
+		prob.InputFormat = config.InputFormat
+	}
+	if config.OutputFormat != "" {
+		prob.OutputFormat = config.OutputFormat
+	}
+	if len(config.Constraints) > 0 {
+		prob.Constraints = config.Constraints
+	}
+	if len(config.Examples) > 0 {
+		prob.Examples = config.Examples
+	}
+	if config.TimeLimit > 0 {
+		prob.TimeLimit = int(config.TimeLimit * 1000)
+	}
+	if config.MemoryLimit > 0 {
+		prob.MemoryLimit = config.MemoryLimit / 1024
+	}
+
+	return prob, nil
+}
+
 // GetProblems handles GET /api/problems.
 // It reads the judge-config/problems directory at runtime and returns a list of problems.
 func GetProblems(c *gin.Context) {
-	// Set PROBLEMS_PATH env var to an absolute path in production.
-	// Default "judge-config/problems" assumes binary runs from repo root.
 	problemsPath := getProblemsPath()
 	
 	entries, err := os.ReadDir(problemsPath)
@@ -134,84 +209,8 @@ func GetProblems(c *gin.Context) {
 		problemPath := filepath.Join(problemsPath, problemID)
 		initPath := filepath.Join(problemPath, "init.yml")
 
-		// Create default problem object based on filename inference
-		prob := Problem{
-			ID:         problemID,
-			Title:      titleCase(problemID), // Fallback title
-			Difficulty: "Medium",            // Default difficulty
-		}
-
-		// Try parsing init.yml if it exists
-		data, err := os.ReadFile(initPath)
-		if err == nil {
-			var config ProblemConfig
-			if err := yaml.Unmarshal(data, &config); err == nil {
-				// Use explicit config values if present.
-				// Precedence is: id, then slug, otherwise keep the inferred directory ID.
-				overrideID := ""
-				if config.ID != "" {
-					overrideID = config.ID
-				} else if config.Slug != "" {
-					overrideID = config.Slug
-				}
-
-				if overrideID != "" {
-					// Validate problem_id format (prevent inconsistency with /submit and /run)
-					if problemIDPattern.MatchString(overrideID) {
-						prob.ID = overrideID
-						prob.Title = titleCase(overrideID) // Update fallback to match new ID
-					} else {
-						log.Printf("[WARN] ignored invalid problem id override for problem %s: %q", problemID, overrideID)
-					}
-				}
-
-				// Explicit title from config takes highest precedence, computed after final ID is set
-				if config.Title != "" {
-					prob.Title = config.Title
-				} else if config.Name != "" {
-					prob.Title = config.Name
-				}
-				if config.Difficulty != "" {
-					prob.Difficulty = normalizeDifficulty(config.Difficulty)
-				} else {
-					prob.Difficulty = "Medium" // Default if missing
-				}
-				if config.Category != "" {
-					prob.Category = config.Category
-				}
-				if config.Points > 0 {
-					prob.Points = config.Points
-				}
-				if config.SolvedCount > 0 {
-					prob.SolvedCount = config.SolvedCount
-				}
-				if config.Description != "" {
-					prob.Description = config.Description
-				}
-				if config.InputFormat != "" {
-					prob.InputFormat = config.InputFormat
-				}
-				if config.OutputFormat != "" {
-					prob.OutputFormat = config.OutputFormat
-				}
-				if len(config.Constraints) > 0 {
-					prob.Constraints = config.Constraints
-				}
-				if len(config.Examples) > 0 {
-					prob.Examples = config.Examples
-				}
-				if config.TimeLimit > 0 {
-					// YAML time_limit is in seconds (float), API expects milliseconds (int)
-					prob.TimeLimit = int(config.TimeLimit * 1000)
-				}
-				if config.MemoryLimit > 0 {
-					// YAML memory_limit is in KB, API expects MB
-					prob.MemoryLimit = config.MemoryLimit / 1024
-				}
-			} else {
-				log.Printf("[WARN] skipped malformed config for problem %s: %v", problemID, err)
-			}
-		} else if !errors.Is(err, os.ErrNotExist) {
+		prob, err := parseProblem(problemID, initPath)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			log.Printf("[WARN] failed to read config for problem %s: %v", problemID, err)
 		}
 
@@ -224,4 +223,38 @@ func GetProblems(c *gin.Context) {
 	})
 
 	c.JSON(http.StatusOK, gin.H{"problems": problems})
+}
+
+// GetProblem handles GET /api/problems/:id
+func GetProblem(c *gin.Context) {
+	id := c.Param("id")
+	if !problemIDPattern.MatchString(id) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid problem id"})
+		return
+	}
+
+	problemsPath := getProblemsPath()
+	problemPath := filepath.Join(problemsPath, id)
+	
+	// Check if directory exists
+	info, err := os.Stat(problemPath)
+	if err != nil || !info.IsDir() {
+		c.JSON(http.StatusNotFound, gin.H{"error": "problem not found"})
+		return
+	}
+
+	initPath := filepath.Join(problemPath, "init.yml")
+	prob, err := parseProblem(id, initPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Printf("[ERROR] failed to parse problem %s: %v", id, err)
+	}
+	
+	// Override description if problem.md exists
+	mdPath := filepath.Join(problemPath, "problem.md")
+	mdData, err := os.ReadFile(mdPath)
+	if err == nil {
+		prob.Description = string(mdData)
+	}
+
+	c.JSON(http.StatusOK, prob)
 }

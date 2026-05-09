@@ -316,3 +316,101 @@ time_limit: 2.0
 		}
 	})
 }
+
+func TestGetProblem(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	t.Run("successful retrieval", func(t *testing.T) {
+		tempDir, err := os.MkdirTemp("", "judge-config-test-get")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer os.RemoveAll(tempDir)
+
+		probDir := filepath.Join(tempDir, "two-sum")
+		if err := os.Mkdir(probDir, 0755); err != nil {
+			t.Fatalf("failed to create dir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(probDir, "init.yml"), []byte(`
+title: Two Sum
+difficulty: easy
+description: Short description in YAML.
+`), 0644); err != nil {
+			t.Fatalf("failed to write yaml: %v", err)
+		}
+
+		// Add a problem.md to override the YAML description
+		if err := os.WriteFile(filepath.Join(probDir, "problem.md"), []byte(`
+# Two Sum
+This is the detailed markdown description.
+`), 0644); err != nil {
+			t.Fatalf("failed to write md: %v", err)
+		}
+
+		originalConfigPath := configPath
+		configPath = tempDir
+		defer func() { configPath = originalConfigPath }()
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Params = []gin.Param{{Key: "id", Value: "two-sum"}}
+
+		GetProblem(c)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d", w.Code)
+		}
+
+		var prob Problem
+		if err := json.Unmarshal(w.Body.Bytes(), &prob); err != nil {
+			t.Fatalf("failed to unmarshal: %v", err)
+		}
+
+		if prob.Title != "Two Sum" {
+			t.Errorf("expected title 'Two Sum', got %q", prob.Title)
+		}
+		if prob.Difficulty != "Easy" {
+			t.Errorf("expected difficulty 'Easy', got %q", prob.Difficulty)
+		}
+		
+		// Ensure problem.md overrides the YAML description
+		expectedDesc := "\n# Two Sum\nThis is the detailed markdown description.\n"
+		if prob.Description != expectedDesc {
+			t.Errorf("expected md description, got %q", prob.Description)
+		}
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		tempDir, err := os.MkdirTemp("", "judge-config-test-not-found")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer os.RemoveAll(tempDir)
+
+		originalConfigPath := configPath
+		configPath = tempDir
+		defer func() { configPath = originalConfigPath }()
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Params = []gin.Param{{Key: "id", Value: "non-existent-problem"}}
+
+		GetProblem(c)
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("expected status 404, got %d", w.Code)
+		}
+	})
+
+	t.Run("invalid id", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Params = []gin.Param{{Key: "id", Value: "invalid_id_with_underscores"}}
+
+		GetProblem(c)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected status 400, got %d", w.Code)
+		}
+	})
+}

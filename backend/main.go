@@ -13,41 +13,26 @@ import (
 	"github.com/GCET-Open-Source-Foundation/coding_arena/backend/adapter"
 	"github.com/GCET-Open-Source-Foundation/coding_arena/backend/bridge"
 	"github.com/GCET-Open-Source-Foundation/coding_arena/backend/config"
+	"github.com/GCET-Open-Source-Foundation/coding_arena/backend/db"
 	"github.com/GCET-Open-Source-Foundation/coding_arena/backend/handler"
 	"github.com/GCET-Open-Source-Foundation/coding_arena/backend/middleware"
 	"github.com/gin-gonic/gin"
 )
 
-const (
-	// maxBodyBytes is the maximum allowed request body size (1 MB).
-	maxBodyBytes = 1 << 20 // 1 MiB
-
-	// Server timeouts to prevent Slowloris and connection exhaustion.
-	readTimeout  = 10 * time.Second
-	writeTimeout = 30 * time.Second
-	idleTimeout  = 120 * time.Second
-
-	// Rate limit: 10 requests/second with burst of 20.
-	ratePerSecond = 10
-	rateBurst     = 20
-)
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
 
 func main() {
-	// --- Production mode ---
 	gin.SetMode(gin.ReleaseMode)
 
-	// --- DMOJ Judge Bridge ---
-	bridgeAddr := os.Getenv("BRIDGE_ADDR")
-	if bridgeAddr == "" {
-		bridgeAddr = ":9999"
-	}
-	judgeID := os.Getenv("JUDGE_ID")
-	if judgeID == "" {
-		judgeID = "coding-arena"
-	}
-	judgeKey := os.Getenv("JUDGE_KEY")
-	if judgeKey == "" {
-		judgeKey = "changeme"
+	bridgeAddr := envOr("BRIDGE_ADDR", ":9999")
+	judgeID := envOr("JUDGE_ID", "coding-arena")
+	judgeKey := envOr("JUDGE_KEY", "changeme")
+	if judgeKey == "changeme" {
 		log.Println("[WARN] Using default JUDGE_KEY — set JUDGE_KEY env var for production.")
 	}
 
@@ -57,60 +42,58 @@ func main() {
 	}
 	defer b.Stop()
 
-	// Load Judge Config
+	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := db.Connect(ctx, dbURL); err != nil {
+			log.Fatalf("database connection failed: %v", err)
+		}
+		defer db.Close()
+		if err := db.Migrate(ctx); err != nil {
+			log.Fatalf("database migration failed: %v", err)
+		}
+	} else {
+		log.Println("[WARN] No DATABASE_URL set — submissions will not be persisted.")
+	}
+
 	cfg, err := config.LoadJudgeConfig()
 	if err != nil {
 		log.Fatalf("failed to load judge config: %v", err)
 	}
 
-	// Create adapter and inject into handler
 	adapt := adapter.New(b, cfg)
 	handler.SetAdapter(adapt)
 
-	// --- Router setup (no default middleware — we add our own) ---
 	r := gin.New()
 
-	// --- Trusted proxies (CVE-2020-28483 mitigation) ---
-	// Only trust loopback by default. Set TRUSTED_PROXIES env var for your infra.
-	trustedProxies := []string{"127.0.0.1", "::1"}
-	if envProxies := os.Getenv("TRUSTED_PROXIES"); envProxies != "" {
-		trustedProxies = strings.Split(envProxies, ",")
-	}
+	trustedProxies := strings.Split(envOr("TRUSTED_PROXIES", "127.0.0.1,::1"), ",")
 	if err := r.SetTrustedProxies(trustedProxies); err != nil {
 		log.Fatalf("failed to set trusted proxies: %v", err)
 	}
 
-	// --- Global middleware stack (order matters) ---
-	r.Use(gin.Recovery())                      // Panic recovery (always first)
-	r.Use(middleware.RequestLogger())           // Structured security logging
-	r.Use(middleware.SecurityHeaders())         // Security response headers (HSTS, CSP, etc.)
-	r.Use(middleware.MaxBodySize(maxBodyBytes)) // Request body size limit (DoS prevention)
+	r.Use(gin.Recovery())
+	r.Use(middleware.RequestLogger())
+	r.Use(middleware.SecurityHeaders())
+	r.Use(middleware.MaxBodySize(1 << 20))
 
-	// CORS — set CORS_ORIGINS env var to a comma-separated list of allowed origins.
 	corsConfig := middleware.DefaultCORSConfig()
-	if envOrigins := os.Getenv("CORS_ORIGINS"); envOrigins != "" {
-		corsConfig.AllowOrigins = strings.Split(envOrigins, ",")
+	if origins := os.Getenv("CORS_ORIGINS"); origins != "" {
+		corsConfig.AllowOrigins = strings.Split(origins, ",")
 	}
 	r.Use(middleware.CORS(corsConfig))
 
-	// Rate limiting
-	limiter := middleware.NewRateLimiter(ratePerSecond, rateBurst)
+	limiter := middleware.NewRateLimiter(10, 20)
 	r.Use(limiter.Middleware())
 
-	// --- API key authentication ---
-	// Load valid API keys from env (comma-separated). In production, use a secrets manager.
 	apiKeys := make(map[string]bool)
-	if envKeys := os.Getenv("API_KEYS"); envKeys != "" {
-		for _, k := range strings.Split(envKeys, ",") {
-			key := strings.TrimSpace(k)
-			if key != "" {
+	if raw := os.Getenv("API_KEYS"); raw != "" {
+		for _, k := range strings.Split(raw, ",") {
+			if key := strings.TrimSpace(k); key != "" {
 				apiKeys[key] = true
 			}
 		}
 	}
 
-	// --- Routes ---
-	// Health check is unauthenticated (for load balancers / k8s probes)
 	r.GET("/health", func(c *gin.Context) {
 		judgeStatus := "disconnected"
 		if adapt.Available() {
@@ -125,49 +108,41 @@ func main() {
 	// --- API routes (all under /api) ---
 	api := r.Group("/api")
 
-	// Public problem list endpoint
+	// Public problem endpoints
 	api.GET("/problems", handler.GetProblems)
+	api.GET("/problems/:id", handler.GetProblem)
 
 	// Authenticated routes
 	authed := api.Group("/")
 	if len(apiKeys) > 0 {
 		authed.Use(middleware.APIKeyAuth(apiKeys))
 	} else {
-		log.Println("[WARN] No API_KEYS configured — authentication is DISABLED. Set API_KEYS env var for production.")
+		log.Println("[WARN] No API_KEYS configured — authentication is DISABLED.")
 	}
 	authed.POST("/submit", handler.Submit)
 	authed.POST("/run", handler.Run)
 
-	// --- HTTP server with explicit timeouts (Slowloris / connection exhaustion prevention) ---
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-
+	port := envOr("PORT", "8080")
 	srv := &http.Server{
 		Addr:         ":" + port,
 		Handler:      r,
-		ReadTimeout:  readTimeout,
-		WriteTimeout: writeTimeout,
-		IdleTimeout:  idleTimeout,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
 
-	// --- Graceful shutdown ---
 	go func() {
-		log.Printf("[INFO] Backend starting on :%s (release mode)", port)
-		log.Printf("[INFO] Bridge listening on %s for judge connections", bridgeAddr)
+		log.Printf("[INFO] Backend starting on :%s", port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("server error: %v", err)
 		}
 	}()
 
-	// Wait for interrupt signal
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-	log.Println("[INFO] Shutting down server...")
+	log.Println("[INFO] Shutting down...")
 
-	// Give in-flight requests up to 30 seconds to complete
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
