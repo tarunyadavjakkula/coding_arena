@@ -1,5 +1,5 @@
 /**
- * Data Service for loading problems and starter code templates from JSON files
+ * Data Service for loading problems and starter code templates from the API
  * Implements in-memory caching to avoid redundant network requests
  */
 
@@ -68,7 +68,7 @@ interface StarterCodeData {
 }
 
 /**
- * Fetches and parses problems.json with caching and retry logic
+ * Fetches and parses problems from the API with caching and retry logic
  * @param retries - Number of retry attempts (default: 3)
  * @param retryDelay - Delay between retries in milliseconds (default: 1000)
  * @returns Promise resolving to array of problems
@@ -84,7 +84,7 @@ export async function getProblems(retries: number = 3, retryDelay: number = 1000
   
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const response = await fetch('/data/problems.json')
+      const response = await fetch('/api/problems')
       
       if (!response.ok) {
         throw new Error(`Failed to load problems: ${response.statusText}`)
@@ -93,7 +93,7 @@ export async function getProblems(retries: number = 3, retryDelay: number = 1000
       const data: ProblemsData = await response.json()
       
       if (!data.problems || !Array.isArray(data.problems)) {
-        throw new Error('Invalid problems.json structure: missing problems array')
+        throw new Error('Invalid API response: missing problems array')
       }
       
       // Cache the result
@@ -115,7 +115,7 @@ export async function getProblems(retries: number = 3, retryDelay: number = 1000
 }
 
 /**
- * Fetches a specific problem by ID from problems.json
+ * Fetches a specific problem by ID from the problem list
  * @param id - The unique problem identifier
  * @returns Promise resolving to the problem or null if not found
  * @throws Error if fetch fails or JSON is invalid
@@ -204,19 +204,15 @@ function validateProblemId(problemId: string): string {
   if (!problemId || typeof problemId !== 'string') {
     throw new Error('Problem ID must be a non-empty string')
   }
-  
+
   const trimmed = problemId.trim()
-  
-  if (trimmed.length === 0) {
-    throw new Error('Problem ID must be a non-empty string')
+
+  // Must match backend problemIDPattern: lowercase alphanumeric + hyphens, 1-64 chars,
+  // must start with alphanumeric. Mirrors the regex in handler/submit.go.
+  if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(trimmed)) {
+    throw new Error('Problem ID must be lowercase alphanumeric with hyphens, 1-64 characters')
   }
-  
-  // Sanitize: reject IDs with special characters or path traversal attempts
-  // eslint-disable-next-line no-control-regex
-  if (/[<>:"|?*\x00-\x1f]/.test(trimmed) || trimmed.includes('..')) {
-    throw new Error('Problem ID contains invalid characters')
-  }
-  
+
   return trimmed
 }
 
